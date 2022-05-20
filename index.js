@@ -4,11 +4,12 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 var nodemailer = require('nodemailer');
 var sgTransport = require('nodemailer-sendgrid-transport');
+const stripe = require('stripe')('sk_test_51L1HgIDnRErumHNYmCJX1KMKGhRUDVYu9f29xMRqyD6bVpdDR1rQcH6GEYsr82JGRmz77ehjF2gtFLhggDBKBiOc00RYyBhmb6');
 
 
 
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const port = process.env.PORT || 5000;
 
 // middletier 
@@ -72,6 +73,37 @@ function sendAppointmentEmail(booking) {
 
 }
 
+function sendPaymentConfirmationEmail(booking) {
+    const { patient, patientName, treatment, date, slot } = booking;
+    var email = {
+        from: process.env.EMAIL_SENDER,
+        to: patient,
+        subject: `We have recieved your payment for ${treatment} is at ${date} is Confirmed`,
+        text: `Your Payment for ${treatment}  at ${date} is Confirmed`,
+        html: `
+            <div>
+            <p>Hello ${patientName} ,</p>
+            <h3>Your Appointment for ${treatment} is confirmed</h3>
+            <h3>Thank you we have recieved your payment</h3>
+            <p>Looking forward to seeing you on ${date} at ${slot}</p>
+            <h3>Our Address</h3>
+            <p>Andor Killa </p>
+            <p>Bangladesh</p>
+            <a href="https://www.programming-hero.com/">Unsubscribe</a>
+            </div>
+        `
+    };
+    emailClient.sendMail(email, function (err, info) {
+        if (err) {
+            console.log(err);
+        }
+        else {
+            console.log('Message sent: ', info);
+        }
+    });
+
+}
+
 
 async function run() {
     try {
@@ -80,6 +112,7 @@ async function run() {
         const bookingCollection = client.db('doctors_portal').collection('booking');
         const userCollection = client.db('doctors_portal').collection('users');
         const doctorCollection = client.db('doctors_portal').collection('doctors');
+        const paymentCollection = client.db('doctors_portal').collection('payments');
 
         // verifyAdmin 
         const verifyAdmin = async (req, res, next) => {
@@ -94,6 +127,17 @@ async function run() {
 
         }
 
+        app.post('/create-payment-intent', verifyJWT, async (req, res) => {
+            const service = req.body;
+            const price = service.price;
+            const amount = price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            });
+            res.send({ clientSecret: paymentIntent.client_secret })
+        });
 
         app.get('/service', async (req, res) => {
             const query = {}
@@ -187,6 +231,14 @@ async function run() {
                 return res.status(403).send({ message: 'forbidden access' })
             }
 
+        });
+
+        // ekta particular id die ;
+        app.get('/booking/:id', verifyJWT, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: ObjectId(id) }
+            const booking = await bookingCollection.findOne(query)
+            res.send(booking);
         })
 
         app.post('/booking', async (req, res) => {
@@ -209,6 +261,22 @@ async function run() {
             const doctors = await doctorCollection.find().toArray();
             res.send(doctors);
         })
+        //updating transaction id
+        app.patch('/booking/:id', verifyJWT, async (req, res) => {
+            const id = req.params.id;
+            const payment = req.body;
+            const filter = { _id: ObjectId(id) }
+            const updatedDoc = {
+                $set: {
+                    paid: true,
+                    transactionId: payment.transactionId
+                }
+            }
+            const result = await paymentCollection.insertOne(payment);
+            const updatedBooking = await bookingCollection.updateOne(filter, updatedDoc);
+            res.send(updatedDoc)
+        })
+
 
         //for doctor
         app.post('/doctor', verifyJWT, verifyAdmin, async (req, res) => {
